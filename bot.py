@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # -------------------- DATABASE --------------------
 def init_db():
-    conn = sqlite3.connect('citymall_bot.db')
+    conn = sqlite3.connect('/app/data/citymall_bot.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, active_account_id INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
@@ -41,7 +41,7 @@ def init_db():
 init_db()
 
 def get_db():
-    return sqlite3.connect('citymall_bot.db')
+    return sqlite3.connect('/app/data/citymall_bot.db')
 
 # -------------------- HELPERS --------------------
 def get_or_create_user(tid):
