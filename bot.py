@@ -106,41 +106,31 @@ def get_account_details(acc_id):
 # -------------------- API FUNCTIONS --------------------
 def fetch_cart(auth_cookie):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
         'Cookie': f'cm_auth={auth_cookie}',
-        'Content-Type': 'application/json',
-        'Origin': 'https://citymall.live',
-        'Referer': 'https://citymall.live/',
-        'Accept': 'application/json, text/plain, */*'
+        'Content-Type': 'application/json'
     }
     try:
         resp = requests.get(CART_API_URL, headers=headers, timeout=10, verify=False)
-        print(f"📥 Cart Status: {resp.status_code}")
-        print(f"📄 Cart Response: {resp.text[:200]}")
         if resp.status_code == 200:
             return True, resp.json()
         else:
-            return False, f"Error: {resp.status_code} - {resp.text[:100]}"
+            return False, f"Error: {resp.status_code}"
     except Exception as e:
         return False, str(e)
 
 def fetch_orders(auth_cookie):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
         'Cookie': f'cm_auth={auth_cookie}',
-        'Content-Type': 'application/json',
-        'Origin': 'https://citymall.live',
-        'Referer': 'https://citymall.live/',
-        'Accept': 'application/json, text/plain, */*'
+        'Content-Type': 'application/json'
     }
     try:
         resp = requests.get(ORDERS_API_URL, headers=headers, timeout=10, verify=False)
-        print(f"📥 Orders Status: {resp.status_code}")
-        print(f"📄 Orders Response: {resp.text[:200]}")
         if resp.status_code == 200:
             return True, resp.json()
         else:
-            return False, f"Error: {resp.status_code} - {resp.text[:100]}"
+            return False, f"Error: {resp.status_code}"
     except Exception as e:
         return False, str(e)
 
