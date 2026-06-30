@@ -191,6 +191,7 @@ def main_menu():
         InlineKeyboardButton("💰 Wallet", callback_data="wallet"),
         InlineKeyboardButton("➕ New Login", callback_data="new_login")
     )
+    # ✅ "Let my coupon work" ki jagah "📦 View Orders"
     kb.add(InlineKeyboardButton("📦 View Orders", callback_data="view_orders"))
     return kb
 
