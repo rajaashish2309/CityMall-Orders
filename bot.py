@@ -10,7 +10,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # -------------------- CONFIG --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set!")
+    BOT_TOKEN = "8905022707:AAF4XdJaqL3a40LBHOTA89hR4ZBeDXrODSw"  # fallback
 
 SEND_OTP_URL = "https://citymall.live/web-api/auth/send-otp"
 VERIFY_OTP_URL = "https://citymall.live/web-api/auth/verify-otp"
@@ -21,9 +21,11 @@ ORDERS_API_URL = "https://citymall.live/web-api/orders?limit=50&offset=0&activeP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- DATABASE --------------------
+# -------------------- DATABASE (SAVED IN VOLUME) --------------------
+DB_NAME = "/app/citymall_bot.db"  # ✅ Path set for persistence
+
 def init_db():
-    conn = sqlite3.connect('/app/data/citymall_bot.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, active_account_id INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
@@ -41,7 +43,7 @@ def init_db():
 init_db()
 
 def get_db():
-    return sqlite3.connect('/app/data/citymall_bot.db')
+    return sqlite3.connect(DB_NAME)
 
 # -------------------- HELPERS --------------------
 def get_or_create_user(tid):
@@ -255,7 +257,7 @@ def verify_otp(phone, otp, session):
     except Exception as e:
         return False, None, str(e)
 
-# -------------------- HANDLERS (NO CHANNEL CHECK) --------------------
+# -------------------- HANDLERS --------------------
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     tid = message.chat.id
@@ -429,4 +431,5 @@ def callback(call):
 # -------------------- MAIN --------------------
 if __name__ == "__main__":
     print("Bot started...")
+    bot.remove_webhook()   # 👈 409 CONFLICT FIX
     bot.infinity_polling()
