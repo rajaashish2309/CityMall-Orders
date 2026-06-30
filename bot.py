@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -------------------- DATABASE (SAVED IN VOLUME) --------------------
-DB_NAME = "/app/citymall_bot.db"  # ✅ Path set for persistence
+DB_NAME = "/app-data/citymall_bot.db"  # ✅ Path set for persistence
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
