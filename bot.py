@@ -3,14 +3,21 @@ import requests
 import sqlite3
 import logging
 import uuid
+import os
+import json
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # -------------------- CONFIG --------------------
-BOT_TOKEN = "8971645884:AAGzC9O2Kuau4E1Ll09ON_6oFZcDFpv6zs8"   # <-- Yahan naya token daalo
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set!")
+
 SEND_OTP_URL = "https://citymall.live/web-api/auth/send-otp"
 VERIFY_OTP_URL = "https://citymall.live/web-api/auth/verify-otp"
 HOMEPAGE_URL = "https://citymall.live/"
+CART_API_URL = "https://citymall.live/web-api/cart/full?activateSsaver=false"
+ORDERS_API_URL = "https://citymall.live/web-api/orders?limit=50&offset=0&activePill=ALL_ORDERS"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,9 +103,82 @@ def get_account_details(acc_id):
         return f"📱 {acc[1]}\n✅ OTP Login\n📍 Gurgaon"
     return "Account not found."
 
+# -------------------- API FUNCTIONS --------------------
+def fetch_cart(auth_cookie):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
+        'Cookie': f'cm_auth={auth_cookie}',
+        'Content-Type': 'application/json'
+    }
+    try:
+        resp = requests.get(CART_API_URL, headers=headers, timeout=10, verify=False)
+        if resp.status_code == 200:
+            return True, resp.json()
+        else:
+            return False, f"Error: {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+def fetch_orders(auth_cookie):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
+        'Cookie': f'cm_auth={auth_cookie}',
+        'Content-Type': 'application/json'
+    }
+    try:
+        resp = requests.get(ORDERS_API_URL, headers=headers, timeout=10, verify=False)
+        if resp.status_code == 200:
+            return True, resp.json()
+        else:
+            return False, f"Error: {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+def format_cart(data):
+    try:
+        cart_page = data.get('cartPage', {})
+        items = cart_page.get('items', {})
+        total = cart_page.get('totalPayable', 0)
+        if not items:
+            return "🛒 Your cart is empty."
+        msg = "🛒 **Your Cart**\n\n"
+        for key, item in items.items():
+            if isinstance(item, dict) and 'name' in item:
+                name = item.get('name', 'Unknown')
+                qty = item.get('quantity', 1)
+                price = item.get('price', 0)
+                msg += f"• {name} x{qty} = ₹{price*qty}\n"
+        msg += f"\n**Total Payable: ₹{total}**"
+        return msg
+    except Exception as e:
+        return f"⚠️ Error formatting cart: {str(e)}"
+
+def format_orders(data):
+    try:
+        orders = data.get('orders', [])
+        if not orders:
+            return "📦 No orders found."
+        msg = "📦 **Your Orders**\n\n"
+        for order in orders[:10]:
+            order_id = order.get('order_id', 'N/A')
+            created_at = order.get('created_at', 'N/A')
+            status = order.get('status', 'Unknown')
+            total = order.get('amount', 0) or order.get('total', 0)
+            delivery_otp = order.get('delivery_otp', order.get('otp', 'N/A'))
+            msg += f"**Order #{order_id}**\n"
+            msg += f"📅 {created_at}\n"
+            msg += f"💰 ₹{total}\n"
+            msg += f"📊 Status: {status}\n"
+            if status.lower() in ['out for delivery', 'dispatched', 'on the way', 'confirmed']:
+                msg += f"🔑 Delivery OTP: `{delivery_otp}`\n"
+            msg += "\n"
+        return msg
+    except Exception as e:
+        return f"⚠️ Error formatting orders: {str(e)}"
+
 # -------------------- BOT --------------------
 bot = telebot.TeleBot(BOT_TOKEN)
-user_states = {}  # tid -> {'state': 'AWAITING_PHONE'|'AWAITING_OTP', 'phone':..., 'session':...}
+user_states = {}
 
 # -------------------- KEYBOARDS --------------------
 def main_menu():
@@ -111,7 +191,7 @@ def main_menu():
         InlineKeyboardButton("💰 Wallet", callback_data="wallet"),
         InlineKeyboardButton("➕ New Login", callback_data="new_login")
     )
-    kb.add(InlineKeyboardButton("🛒 Let my coupon work", callback_data="open_store"))
+    kb.add(InlineKeyboardButton("📦 View Orders", callback_data="view_orders"))
     return kb
 
 def account_list_kb(accounts):
@@ -130,11 +210,12 @@ def account_actions_kb(acc_id):
     )
     kb.add(
         InlineKeyboardButton("🎁 Referral", callback_data=f"referral_{acc_id}"),
-        InlineKeyboardButton("🏠 Home", callback_data="home")
+        InlineKeyboardButton("📦 View Orders", callback_data=f"orders_{acc_id}")
     )
+    kb.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
     return kb
 
-# -------------------- API FUNCTIONS --------------------
+# -------------------- OTP FUNCTIONS --------------------
 def send_otp(phone):
     headers = {'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36', 'Content-Type': 'application/json'}
     session = requests.Session()
@@ -175,12 +256,17 @@ def verify_otp(phone, otp, session):
     except Exception as e:
         return False, None, str(e)
 
-# -------------------- HANDLERS --------------------
+# -------------------- HANDLERS (NO CHANNEL CHECK) --------------------
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     tid = message.chat.id
     get_or_create_user(tid)
-    bot.send_message(tid, "<b>CityMall Bot</b>\n\nManage your accounts easily.", reply_markup=main_menu(), parse_mode='HTML')
+    bot.send_message(
+        tid,
+        "<b>CityMall Orders</b>\n\nManage your accounts, view cart and orders.",
+        reply_markup=main_menu(),
+        parse_mode='HTML'
+    )
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
@@ -213,7 +299,11 @@ def handle_text(message):
         acc_id = save_account(tid, phone, auth_cookie or "")
         set_user_active(tid, acc_id)
         user_states[tid] = None
-        bot.send_message(tid, f"✅ Account linked!\n\n{get_account_details(acc_id)}", reply_markup=account_actions_kb(acc_id))
+        bot.send_message(
+            tid,
+            f"✅ Account linked!\n\n{get_account_details(acc_id)}",
+            reply_markup=account_actions_kb(acc_id)
+        )
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -222,12 +312,23 @@ def callback(call):
     print("Callback:", data)
 
     if data == "home":
-        bot.edit_message_text("<b>CityMall Bot</b>\n\nManage your accounts.", tid, call.message.message_id, reply_markup=main_menu(), parse_mode='HTML')
+        bot.edit_message_text(
+            "<b>CityMall Orders</b>\n\nManage your accounts.",
+            tid,
+            call.message.message_id,
+            reply_markup=main_menu(),
+            parse_mode='HTML'
+        )
         bot.answer_callback_query(call.id)
 
     elif data == "new_login":
         user_states[tid] = {'state': 'AWAITING_PHONE'}
-        bot.edit_message_text("📱 Enter your 10-digit number:", tid, call.message.message_id, reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Cancel", callback_data="home")))
+        bot.edit_message_text(
+            "📱 Enter your 10-digit number:",
+            tid,
+            call.message.message_id,
+            reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Cancel", callback_data="home"))
+        )
         bot.answer_callback_query(call.id)
 
     elif data == "my_accounts":
@@ -236,7 +337,30 @@ def callback(call):
             bot.answer_callback_query(call.id, "No accounts.")
             bot.edit_message_text("❌ No accounts found.", tid, call.message.message_id, reply_markup=main_menu())
             return
-        bot.edit_message_text("<b>My Accounts</b>", tid, call.message.message_id, reply_markup=account_list_kb(accounts), parse_mode='HTML')
+        bot.edit_message_text(
+            "<b>My Accounts</b>",
+            tid,
+            call.message.message_id,
+            reply_markup=account_list_kb(accounts),
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id)
+
+    elif data == "view_orders":
+        active_id = get_user_active(tid)
+        if not active_id:
+            bot.answer_callback_query(call.id, "No active account.")
+            return
+        acc = get_account(active_id)
+        if not acc:
+            bot.answer_callback_query(call.id, "Account not found.")
+            return
+        ok, orders_data = fetch_orders(acc[2])
+        if ok:
+            msg = format_orders(orders_data)
+            bot.send_message(tid, msg, parse_mode='Markdown')
+        else:
+            bot.send_message(tid, f"❌ Failed to fetch orders: {orders_data}")
         bot.answer_callback_query(call.id)
 
     elif data.startswith("select_"):
@@ -247,12 +371,42 @@ def callback(call):
             return
         set_user_active(tid, acc_id)
         details = get_account_details(acc_id)
-        bot.edit_message_text(f"<b>ACCOUNT READY</b>\n\n{details}", tid, call.message.message_id, reply_markup=account_actions_kb(acc_id), parse_mode='HTML')
+        bot.edit_message_text(
+            f"<b>ACCOUNT READY</b>\n\n{details}",
+            tid,
+            call.message.message_id,
+            reply_markup=account_actions_kb(acc_id),
+            parse_mode='HTML'
+        )
         bot.answer_callback_query(call.id)
 
     elif data.startswith("cart_"):
+        acc_id = int(data.split("_")[1])
+        acc = get_account(acc_id)
+        if not acc:
+            bot.answer_callback_query(call.id, "Account not found.")
+            return
+        ok, cart_data = fetch_cart(acc[2])
+        if ok:
+            msg = format_cart(cart_data)
+            bot.send_message(tid, msg, parse_mode='Markdown')
+        else:
+            bot.send_message(tid, f"❌ Failed to fetch cart: {cart_data}")
         bot.answer_callback_query(call.id)
-        bot.send_message(tid, "🛒 Cart feature coming soon!")
+
+    elif data.startswith("orders_"):
+        acc_id = int(data.split("_")[1])
+        acc = get_account(acc_id)
+        if not acc:
+            bot.answer_callback_query(call.id, "Account not found.")
+            return
+        ok, orders_data = fetch_orders(acc[2])
+        if ok:
+            msg = format_orders(orders_data)
+            bot.send_message(tid, msg, parse_mode='Markdown')
+        else:
+            bot.send_message(tid, f"❌ Failed to fetch orders: {orders_data}")
+        bot.answer_callback_query(call.id)
 
     elif data.startswith("wallet_"):
         bot.answer_callback_query(call.id)
@@ -261,10 +415,6 @@ def callback(call):
     elif data.startswith("referral_"):
         bot.answer_callback_query(call.id)
         bot.send_message(tid, "🎁 Referral feature coming soon!")
-
-    elif data == "open_store":
-        bot.answer_callback_query(call.id)
-        bot.send_message(tid, "🛒 <a href='https://citymall.live'>Open CityMall Store</a>", parse_mode='HTML')
 
     elif data == "wallet":
         active = get_user_active(tid)
