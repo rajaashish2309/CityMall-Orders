@@ -4,7 +4,6 @@ import sqlite3
 import logging
 import uuid
 import os
-import json
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -16,6 +15,8 @@ if not BOT_TOKEN:
 SEND_OTP_URL = "https://citymall.live/web-api/auth/send-otp"
 VERIFY_OTP_URL = "https://citymall.live/web-api/auth/verify-otp"
 HOMEPAGE_URL = "https://citymall.live/"
+
+# ✅ Real endpoints from your capture
 CART_API_URL = "https://citymall.live/web-api/cart/full?activateSsaver=false"
 ORDERS_API_URL = "https://citymall.live/web-api/orders?limit=50&offset=0&activePill=ALL_ORDERS"
 
@@ -108,7 +109,7 @@ def fetch_cart(auth_cookie):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
         'Cookie': f'cm_auth={auth_cookie}',
-        'Content-Type': 'application/json'
+        'Accept': 'application/json'
     }
     try:
         resp = requests.get(CART_API_URL, headers=headers, timeout=10, verify=False)
@@ -123,7 +124,7 @@ def fetch_orders(auth_cookie):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
         'Cookie': f'cm_auth={auth_cookie}',
-        'Content-Type': 'application/json'
+        'Accept': 'application/json'
     }
     try:
         resp = requests.get(ORDERS_API_URL, headers=headers, timeout=10, verify=False)
@@ -191,7 +192,7 @@ def main_menu():
         InlineKeyboardButton("💰 Wallet", callback_data="wallet"),
         InlineKeyboardButton("➕ New Login", callback_data="new_login")
     )
-    # ✅ "Let my coupon work" ki jagah "📦 View Orders"
+    # ✅ "Let my coupon work" replaced with "📦 View Orders"
     kb.add(InlineKeyboardButton("📦 View Orders", callback_data="view_orders"))
     return kb
 
