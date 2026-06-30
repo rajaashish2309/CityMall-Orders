@@ -21,28 +21,31 @@ ORDERS_API_URL = "https://citymall.live/web-api/orders?limit=50&offset=0&activeP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- DATABASE --------------------
-DB_NAME = "/app/citymall_bot.db"
+# -------------------- DATABASE (Volume path - /app-data) --------------------
+DB_NAME = "/app-data/citymall_bot.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, active_account_id INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        telegram_id INTEGER PRIMARY KEY,
+        active_account_id INTEGER,
+        display_name TEXT
+    )''')
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id INTEGER,
         phone TEXT,
-        label TEXT,
         auth_cookie TEXT,
         device_id TEXT,
         created_at TEXT,
         FOREIGN KEY(telegram_id) REFERENCES users(telegram_id)
     )''')
-    # Add label column if not exists (for backward compatibility)
-    try:
-        c.execute("ALTER TABLE accounts ADD COLUMN label TEXT")
-    except sqlite3.OperationalError:
-        pass
     conn.commit()
     conn.close()
 
@@ -52,13 +55,33 @@ def get_db():
     return sqlite3.connect(DB_NAME)
 
 # -------------------- HELPERS --------------------
-def get_or_create_user(tid):
+def get_or_create_user(tid, first_name=None):
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (tid,))
-    if not cur.fetchone():
-        cur.execute("INSERT INTO users (telegram_id) VALUES (?)", (tid,))
+    cur.execute("SELECT telegram_id, display_name FROM users WHERE telegram_id = ?", (tid,))
+    row = cur.fetchone()
+    if not row:
+        display_name = first_name if first_name else f"User{tid}"
+        cur.execute("INSERT INTO users (telegram_id, display_name) VALUES (?, ?)", (tid, display_name))
         db.commit()
+        cur.execute("SELECT telegram_id, display_name FROM users WHERE telegram_id = ?", (tid,))
+        row = cur.fetchone()
+    db.close()
+    return row
+
+def get_display_name(tid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT display_name FROM users WHERE telegram_id = ?", (tid,))
+    row = cur.fetchone()
+    db.close()
+    return row[0] if row and row[0] else None
+
+def set_display_name(tid, new_name):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("UPDATE users SET display_name = ? WHERE telegram_id = ?", (new_name, tid))
+    db.commit()
     db.close()
 
 def get_user_active(tid):
@@ -76,31 +99,22 @@ def set_user_active(tid, acc_id):
     db.commit()
     db.close()
 
-def save_account(tid, phone, auth_cookie, label=None):
+def save_account(tid, phone, auth_cookie):
     db = get_db()
     cur = db.cursor()
     now = datetime.now().isoformat()
     device_id = str(uuid.uuid4())
-    # if no label provided, use phone number as label
-    label = label if label else phone
-    cur.execute('''INSERT INTO accounts (telegram_id, phone, label, auth_cookie, device_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)''', (tid, phone, label, auth_cookie, device_id, now))
+    cur.execute('''INSERT INTO accounts (telegram_id, phone, auth_cookie, device_id, created_at)
+                   VALUES (?, ?, ?, ?, ?)''', (tid, phone, auth_cookie, device_id, now))
     acc_id = cur.lastrowid
     db.commit()
     db.close()
     return acc_id
 
-def update_account_label(acc_id, new_label):
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("UPDATE accounts SET label = ? WHERE id = ?", (new_label, acc_id))
-    db.commit()
-    db.close()
-
 def get_accounts(tid):
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT id, phone, label FROM accounts WHERE telegram_id = ? ORDER BY created_at DESC", (tid,))
+    cur.execute("SELECT id, phone FROM accounts WHERE telegram_id = ? ORDER BY created_at DESC", (tid,))
     rows = cur.fetchall()
     db.close()
     return rows
@@ -108,7 +122,7 @@ def get_accounts(tid):
 def get_account(acc_id):
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT id, phone, label, auth_cookie FROM accounts WHERE id = ?", (acc_id,))
+    cur.execute("SELECT id, phone, auth_cookie FROM accounts WHERE id = ?", (acc_id,))
     row = cur.fetchone()
     db.close()
     return row
@@ -116,14 +130,8 @@ def get_account(acc_id):
 def get_account_details(acc_id):
     acc = get_account(acc_id)
     if acc:
-        phone, label = acc[1], acc[2]
-        return f"📱 {phone}\n🏷️ Label: {label}\n✅ OTP Login\n📍 Gurgaon"
+        return f"📱 {acc[1]}\n✅ OTP Login\n📍 Gurgaon"
     return "Account not found."
-
-def get_accounts_with_label(tid):
-    """Returns list of (id, display_name) where display_name is label if set, else phone."""
-    accs = get_accounts(tid)
-    return [(acc_id, label or phone) for acc_id, phone, label in accs]
 
 # -------------------- API FUNCTIONS --------------------
 def fetch_cart(auth_cookie):
@@ -200,7 +208,7 @@ def format_orders(data):
 
 # -------------------- BOT --------------------
 bot = telebot.TeleBot(BOT_TOKEN)
-user_states = {}  # state: 'awaiting_label' during account creation
+user_states = {}
 
 # -------------------- KEYBOARDS --------------------
 def main_menu():
@@ -216,11 +224,11 @@ def main_menu():
     kb.add(InlineKeyboardButton("📦 View Orders", callback_data="view_orders"))
     return kb
 
-def account_list_kb(tid):
-    accounts = get_accounts_with_label(tid)
+def account_list_kb(accounts):
     kb = InlineKeyboardMarkup(row_width=1)
-    for acc_id, display_name in accounts:
-        kb.add(InlineKeyboardButton(display_name, callback_data=f"select_{acc_id}"))
+    for acc_id, phone in accounts:
+        masked = phone[:3] + "****" + phone[-4:]
+        kb.add(InlineKeyboardButton(masked, callback_data=f"select_{acc_id}"))
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="home"))
     return kb
 
@@ -234,10 +242,7 @@ def account_actions_kb(acc_id):
         InlineKeyboardButton("🎁 Referral", callback_data=f"referral_{acc_id}"),
         InlineKeyboardButton("📦 View Orders", callback_data=f"orders_{acc_id}")
     )
-    kb.add(
-        InlineKeyboardButton("✏️ Rename", callback_data=f"rename_{acc_id}"),
-        InlineKeyboardButton("🏠 Home", callback_data="home")
-    )
+    kb.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
     return kb
 
 # -------------------- OTP FUNCTIONS --------------------
@@ -285,13 +290,29 @@ def verify_otp(phone, otp, session):
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     tid = message.chat.id
-    get_or_create_user(tid)
+    first_name = message.from_user.first_name
+    get_or_create_user(tid, first_name)
+    display_name = get_display_name(tid) or first_name or "User"
+    
     bot.send_message(
         tid,
-        "<b>CityMall Orders</b>\n\nManage your accounts, view cart and orders.",
+        f"<b>Welcome back, {display_name}! 👋</b>\n\nCityMall Orders bot — manage your accounts, view cart and orders.",
         reply_markup=main_menu(),
         parse_mode='HTML'
     )
+
+@bot.message_handler(commands=['setname'])
+def setname_cmd(message):
+    tid = message.chat.id
+    try:
+        new_name = message.text.split(' ', 1)[1].strip()
+        if not new_name:
+            bot.reply_to(message, "❌ Please provide a name. Example: `/setname Ashish Raj`", parse_mode='Markdown')
+            return
+        set_display_name(tid, new_name)
+        bot.reply_to(message, f"✅ Your display name has been updated to: **{new_name}**", parse_mode='Markdown')
+    except IndexError:
+        bot.reply_to(message, "❌ Please provide a name. Example: `/setname Ashish Raj`", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
@@ -299,23 +320,6 @@ def handle_text(message):
     state = user_states.get(tid)
     if not state:
         return bot.reply_to(message, "⚠️ Use the buttons below.", reply_markup=main_menu())
-
-    # Handle label input during account creation
-    if state.get('state') == 'AWAITING_LABEL':
-        label = message.text.strip()
-        if label.lower() == 'skip':
-            label = state.get('phone')  # default to phone number
-        # save account with label
-        acc_id = save_account(tid, state['phone'], state['auth_cookie'], label)
-        set_user_active(tid, acc_id)
-        user_states[tid] = None
-        bot.send_message(
-            tid,
-            f"✅ Account linked!\n\n{get_account_details(acc_id)}",
-            reply_markup=account_actions_kb(acc_id)
-        )
-        return
-
     if state.get('state') == 'AWAITING_PHONE':
         phone = message.text.strip()
         if not phone.isdigit() or len(phone) != 10:
@@ -338,15 +342,13 @@ def handle_text(message):
         if not ok:
             user_states[tid] = None
             return bot.reply_to(message, f"❌ {msg}")
-        # OTP verified - ask for label
-        user_states[tid] = {
-            'state': 'AWAITING_LABEL',
-            'phone': phone,
-            'auth_cookie': auth_cookie
-        }
-        bot.reply_to(
-            message,
-            "✅ OTP verified!\n\nEnter a label for this account (e.g., 'Ghar wala', 'Office wala')\nOr type 'skip' to use phone number as label."
+        acc_id = save_account(tid, phone, auth_cookie or "")
+        set_user_active(tid, acc_id)
+        user_states[tid] = None
+        bot.send_message(
+            tid,
+            f"✅ Account linked!\n\n{get_account_details(acc_id)}",
+            reply_markup=account_actions_kb(acc_id)
         )
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -356,8 +358,9 @@ def callback(call):
     print("Callback:", data)
 
     if data == "home":
+        display_name = get_display_name(tid) or "User"
         bot.edit_message_text(
-            "<b>CityMall Orders</b>\n\nManage your accounts.",
+            f"<b>Welcome back, {display_name}!</b>\n\nManage your accounts.",
             tid,
             call.message.message_id,
             reply_markup=main_menu(),
@@ -382,10 +385,10 @@ def callback(call):
             bot.edit_message_text("❌ No accounts found.", tid, call.message.message_id, reply_markup=main_menu())
             return
         bot.edit_message_text(
-            "<b>My Accounts</b>\n\nTap to switch:",
+            "<b>My Accounts</b>",
             tid,
             call.message.message_id,
-            reply_markup=account_list_kb(tid),
+            reply_markup=account_list_kb(accounts),
             parse_mode='HTML'
         )
         bot.answer_callback_query(call.id)
@@ -399,7 +402,7 @@ def callback(call):
         if not acc:
             bot.answer_callback_query(call.id, "Account not found.")
             return
-        ok, orders_data = fetch_orders(acc[3])
+        ok, orders_data = fetch_orders(acc[2])
         if ok:
             msg = format_orders(orders_data)
             bot.send_message(tid, msg, parse_mode='Markdown')
@@ -424,30 +427,13 @@ def callback(call):
         )
         bot.answer_callback_query(call.id)
 
-    elif data.startswith("rename_"):
-        acc_id = int(data.split("_")[1])
-        acc = get_account(acc_id)
-        if not acc:
-            bot.answer_callback_query(call.id, "Account not found.")
-            return
-        # ask for new label
-        user_states[tid] = {'state': 'AWAITING_LABEL', 'rename_acc_id': acc_id}
-        bot.edit_message_text(
-            f"✏️ Enter new label for account **{acc[1]}**\n(Current label: {acc[2]})",
-            tid,
-            call.message.message_id,
-            reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Cancel", callback_data="home")),
-            parse_mode='Markdown'
-        )
-        bot.answer_callback_query(call.id)
-
     elif data.startswith("cart_"):
         acc_id = int(data.split("_")[1])
         acc = get_account(acc_id)
         if not acc:
             bot.answer_callback_query(call.id, "Account not found.")
             return
-        ok, cart_data = fetch_cart(acc[3])
+        ok, cart_data = fetch_cart(acc[2])
         if ok:
             msg = format_cart(cart_data)
             bot.send_message(tid, msg, parse_mode='Markdown')
@@ -461,7 +447,7 @@ def callback(call):
         if not acc:
             bot.answer_callback_query(call.id, "Account not found.")
             return
-        ok, orders_data = fetch_orders(acc[3])
+        ok, orders_data = fetch_orders(acc[2])
         if ok:
             msg = format_orders(orders_data)
             bot.send_message(tid, msg, parse_mode='Markdown')
