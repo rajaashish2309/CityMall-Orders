@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # -------------------- DATABASE --------------------
-DB_NAME = "/app-data/citymall_bot.db"
+DB_NAME = "/app/citymall_bot.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
