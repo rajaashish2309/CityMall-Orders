@@ -78,14 +78,15 @@ def set_user_active(tid, acc_id):
     db.commit()
     db.close()
 
-def save_account(tid, phone, auth_cookie):
+def save_account(tid, phone, auth_cookie, name=None):
     db = get_db()
     cur = db.cursor()
     now = datetime.now().isoformat()
     device_id = str(uuid.uuid4())
-    # default name = phone
+    if not name:
+        name = phone
     cur.execute('''INSERT INTO accounts (telegram_id, phone, auth_cookie, device_id, created_at, name)
-                   VALUES (?, ?, ?, ?, ?, ?)''', (tid, phone, auth_cookie, device_id, now, phone))
+                   VALUES (?, ?, ?, ?, ?, ?)''', (tid, phone, auth_cookie, device_id, now, name))
     acc_id = cur.lastrowid
     db.commit()
     db.close()
@@ -117,8 +118,8 @@ def set_account_name(acc_id, new_name):
 def get_account_details(acc_id):
     acc = get_account(acc_id)
     if acc:
-        display_name = acc[3] if acc[3] else acc[1]
-        return f"📱 {display_name}\n✅ OTP Login\n📍 Gurgaon"
+        name = acc[3] if acc[3] else acc[1]
+        return f"📱 {name}\n✅ OTP Login\n📍 Gurgaon"
     return "Account not found."
 
 # -------------------- API FUNCTIONS --------------------
@@ -180,8 +181,8 @@ def format_orders(data):
         for order in orders[:10]:
             order_id = order.get('order_id', 'N/A')
             created_at = order.get('created_at', 'N/A')
-            status = order.get('status', 'Unknown')
-            total = order.get('amount', 0) or order.get('total', 0)
+            status = order.get('status', order.get('order_status', 'Unknown'))
+            total = order.get('total', order.get('amount', order.get('order_total', 0)))
             delivery_otp = order.get('delivery_otp', order.get('otp', 'N/A'))
             msg += f"**Order #{order_id}**\n"
             msg += f"📅 {created_at}\n"
@@ -232,7 +233,7 @@ def account_actions_kb(acc_id):
     )
     kb.add(
         InlineKeyboardButton("🏠 Home", callback_data="home"),
-        InlineKeyboardButton("✏️ Rename", callback_data=f"rename_{acc_id}")  # ✅ CHANGE HERE
+        InlineKeyboardButton("📌 Rename Account", callback_data=f"setname_{acc_id}")
     )
     return kb
 
@@ -289,33 +290,36 @@ def start_cmd(message):
         parse_mode='HTML'
     )
 
+@bot.message_handler(commands=['setname'])
+def setname_cmd(message):
+    tid = message.chat.id
+    try:
+        parts = message.text.split(' ', 2)
+        if len(parts) < 3:
+            bot.reply_to(message, "❌ Usage: `/setname <account_id> <new_name>`\n\nExample: `/setname 1 Ghar wala`", parse_mode='Markdown')
+            return
+        acc_id = int(parts[1])
+        new_name = parts[2].strip()
+        if not new_name:
+            bot.reply_to(message, "❌ Name cannot be empty.")
+            return
+        acc = get_account(acc_id)
+        if not acc:
+            bot.reply_to(message, "❌ Account not found.")
+            return
+        user_accounts = get_accounts(tid)
+        if not any(a[0] == acc_id for a in user_accounts):
+            bot.reply_to(message, "❌ You don't have permission.")
+            return
+        set_account_name(acc_id, new_name)
+        bot.reply_to(message, f"✅ Account name updated to: **{new_name}**", parse_mode='Markdown')
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid account ID. Use `/setname <id> <name>`", parse_mode='Markdown')
+
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     tid = message.chat.id
     state = user_states.get(tid)
-    
-    # Handling Rename state
-    if state and state.get('state') == 'AWAITING_RENAME':
-        acc_id = state.get('acc_id')
-        new_name = message.text.strip()
-        if not new_name:
-            bot.reply_to(message, "❌ Name cannot be empty. Please send a valid name.")
-            return
-        # Update name in database
-        set_account_name(acc_id, new_name)
-        user_states[tid] = None
-        bot.reply_to(message, f"✅ Account renamed to: **{new_name}**", parse_mode='Markdown')
-        # Refresh account actions menu
-        details = get_account_details(acc_id)
-        bot.send_message(
-            tid,
-            f"<b>✅ ACCOUNT READY</b>\n\n{details}",
-            reply_markup=account_actions_kb(acc_id),
-            parse_mode='HTML'
-        )
-        return
-
-    # Normal flow
     if not state:
         return bot.reply_to(message, "⚠️ Use the buttons below.", reply_markup=main_menu())
     if state.get('state') == 'AWAITING_PHONE':
@@ -340,7 +344,7 @@ def handle_text(message):
         if not ok:
             user_states[tid] = None
             return bot.reply_to(message, f"❌ {msg}")
-        acc_id = save_account(tid, phone, auth_cookie or "")
+        acc_id = save_account(tid, phone, auth_cookie or "", name=phone)
         set_user_active(tid, acc_id)
         user_states[tid] = None
         bot.send_message(
@@ -452,20 +456,15 @@ def callback(call):
             bot.send_message(tid, f"❌ Failed to fetch orders: {orders_data}")
         bot.answer_callback_query(call.id)
 
-    elif data.startswith("rename_"):  # ✅ HANDLE RENAME
+    elif data.startswith("setname_"):
         acc_id = int(data.split("_")[1])
         acc = get_account(acc_id)
         if not acc:
             bot.answer_callback_query(call.id, "Account not found.")
             return
-        bot.answer_callback_query(call.id)
-        # Set state to AWAITING_RENAME
-        user_states[tid] = {'state': 'AWAITING_RENAME', 'acc_id': acc_id}
-        bot.send_message(
-            tid,
-            f"✏️ Enter new name for account:\n`{acc[3] or acc[1]}`\n\nSend the new name as a message.",
-            parse_mode='Markdown'
-        )
+        bot.answer_callback_query(call.id, "Type new name")
+        bot.send_message(tid, f"✏️ Enter new name for this account:")
+        bot.register_next_step_handler_by_chat_id(tid, set_name_after_prompt, acc_id)
 
     elif data.startswith("wallet_"):
         bot.answer_callback_query(call.id)
@@ -485,6 +484,23 @@ def callback(call):
 
     else:
         bot.answer_callback_query(call.id, "Unknown action.")
+
+def set_name_after_prompt(message, acc_id):
+    tid = message.chat.id
+    new_name = message.text.strip()
+    if not new_name:
+        bot.reply_to(message, "❌ Name cannot be empty.")
+        return
+    acc = get_account(acc_id)
+    if not acc:
+        bot.reply_to(message, "❌ Account not found.")
+        return
+    user_accounts = get_accounts(tid)
+    if not any(a[0] == acc_id for a in user_accounts):
+        bot.reply_to(message, "❌ You don't have permission.")
+        return
+    set_account_name(acc_id, new_name)
+    bot.reply_to(message, f"✅ Account name updated to: **{new_name}**", parse_mode='Markdown')
 
 # -------------------- MAIN --------------------
 if __name__ == "__main__":
