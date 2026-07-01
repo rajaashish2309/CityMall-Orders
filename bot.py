@@ -21,8 +21,8 @@ ORDERS_API_URL = "https://citymall.live/web-api/orders?limit=50&offset=0&activeP
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- DATABASE --------------------
-DB_NAME = "/app/citymall_bot.db"
+# -------------------- DATABASE PATH --------------------
+DB_NAME = "/app/citymall_bot.db"   # 👈 YEH LINE IMPORTANT HAI!
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
